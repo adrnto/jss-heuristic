@@ -148,3 +148,4 @@ Gonçalves, J. F., & Resende, M. G. (2014). An extended Akers graphical method w
 
 <a id="mipjssp"></a> 
 Ku, W. Y., & Beck, J. C. (2016). Mixed integer programming models for job shop scheduling: A computational analysis. Computers & Operations Research, 73, 165-173.# jss-heuristic
+# jss-heuristic
