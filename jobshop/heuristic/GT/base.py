@@ -1,6 +1,7 @@
 import numpy as np
 import random
 from concurrent.futures import ThreadPoolExecutor
+
 from jobshop.params import JobShopParams
 from jobshop.heuristic.operations import Graph
 from jobshop.heuristic.construction import SemiGreedyMakespan, SemiGreedyAlternate
@@ -55,7 +56,7 @@ class GT:
         """
         S = Graph(self.params)
         S = self.construction(S)
-        
+
         calc_tails(S)
         get_critical(S)
         S = local_search(S)
@@ -96,39 +97,38 @@ class GT:
                 # Verificar si ambos trabajos tienen operaciones en la misma máquina
                 for op1 in op1_list:
                     for op2 in op2_list:
-                        if op1.machine == op2.machine:
+                        if op1.machine == op2.machine and op1 in solution.critical_path and op2 in solution.critical_path:  # Solo intercambiar operaciones en la ruta crítica
                             # Si las operaciones están en la misma máquina, intercambiarlas
                             neighbor_solution.O[op1.machine, op1.job], neighbor_solution.O[op2.machine, op2.job] = \
                                 neighbor_solution.O[op2.machine, op2.job], neighbor_solution.O[op1.machine, op1.job]
 
-                # Agregar la solución vecina a la lista
-                neighbors.append(neighbor_solution)
+                            # Calcular makespan incrementalmente
+                            changed_ops = {neighbor_solution.O[op1.machine, op1.job], neighbor_solution.O[op2.machine, op2.job]}
+                            neighbor_solution.makespan = self.get_makespan(neighbor_solution, changed_ops)
+
+                            neighbors.append(neighbor_solution)
+                            break  # Salir del bucle interno después de un intercambio
+                    else:
+                        continue  # Continuar si el bucle interno no se rompe
+                    break  # Salir del bucle externo si el bucle interno se rompe
 
         return neighbors
-        
-    def evaluate_makespan_parallel(self, neighbors):
-        """Evaluar los makespans de los vecinos en paralelo."""
-        with ThreadPoolExecutor() as executor:
-            # `executor.map` ejecuta `self.get_makespan` para cada vecino en paralelo
-            costs = list(executor.map(self.get_makespan, neighbors))
-        return costs
-    
-    
-    def get_makespan(self, solution: Graph) -> float:
-        """Calculate the makespan of the given solution.
 
-        Parameters
-        ----------
-        solution : Graph
-            Solution to evaluate
+    def get_makespan(self, solution: Graph, changed_operations=None) -> float:
+        """Calculate the makespan, optionally with incremental update."""
+        if changed_operations is None:
+            calc_tails(solution)  # Full recalculation
+        else:
+            # Recalculate tails for affected operations and their successors
+            affected_operations = set()
+            for op in changed_operations:
+                affected_operations.add(op)
+                affected_operations.update(solution.get_successors(op))
+            for op in affected_operations:
+                op.tail = 0  # Reset tail
+                for succ in solution.get_successors(op):
+                    op.tail = max(op.tail, succ.tail + succ.duration)
 
-        Returns
-        -------
-        float
-            Makespan of the solution
-        """
-        # The makespan is the total time required to complete all jobs
-        calc_tails(solution)  # Calculate tail times for each operation
         return max(op.release + op.duration for op in solution.O.values())
 
     def is_tabu(self, solution: Graph) -> bool:
@@ -144,7 +144,15 @@ class GT:
         bool
             True if the solution is tabu, False otherwise
         """
-        return solution.signature in self.tabu_list
+        # Usamos una tupla de movimientos como representación para la lista tabú
+        move = self.get_last_move(solution) 
+        return move in self.tabu_list
+
+    def get_last_move(self, solution: Graph):
+        """Obtener la última operación movida en la solución."""
+        # Asumiendo que la solución almacena la información del último movimiento
+        # (implementa esto en la función get_neighbors)
+        return solution.last_move  
 
     def update_tabu_list(self, solution: Graph) -> None:
         """Update the tabu list with the new solution.
@@ -156,7 +164,8 @@ class GT:
         """
         if len(self.tabu_list) >= self.tabu_size:
             self.tabu_list.pop(0)  # Remove the oldest entry
-        self.tabu_list.append(solution.signature)
+        move = self.get_last_move(solution)
+        self.tabu_list.append(move)
 
     def iter(self) -> Graph:
         """Iterate to find the best solution using G&T."""
@@ -166,18 +175,13 @@ class GT:
         for _ in range(self.max_iter):
             neighbors = self.get_neighbors(current_solution)
 
-            # Usamos `evaluate_makespan_parallel` para calcular los makespans de los vecinos en paralelo
-            neighbor_costs = self.evaluate_makespan_parallel(neighbors)
-
+            # Encontrar el mejor vecino no tabú
             best_neighbor = None
             best_neighbor_cost = np.inf
-
-            # Encontrar el mejor vecino no tabú
-            for i, neighbor in enumerate(neighbors):
-                neighbor_cost = neighbor_costs[i]  # Usamos el costo calculado previamente en paralelo
-                if neighbor_cost < best_neighbor_cost and not self.is_tabu(neighbor):
+            for neighbor in neighbors:
+                if neighbor.makespan < best_neighbor_cost and not self.is_tabu(neighbor):
                     best_neighbor = neighbor
-                    best_neighbor_cost = neighbor_cost
+                    best_neighbor_cost = neighbor.makespan
 
             # Si se encuentra un vecino no tabú, moverse a esa solución
             if best_neighbor is not None:
